@@ -1,0 +1,43 @@
+{
+  "TreasuryCode": "Teacher Employee ID",
+  "TchSurName": "Last Name",
+  "TchFullName": "Teacher Name",
+  "FatherName": "Father's Name",
+  "Designation": "Designation",
+  "dob": "Date of Birth",
+  "dort": "Date of Retirement",
+  "gender": "Gender",
+  "teacher_type": "Teacher Type",
+  "bankacc_no": "Bank Account No",
+  "aadhar_no": "Aadhar Number",
+  "mobile_no": "Mobile Number",
+  "email": "Email",
+  "school_id": "School ID",
+  "udise": "UDISE",
+  "vmdistrict": "District",
+  "vmmandal": "Mandal",
+  "vmpanch": "Panchayat",
+  "vmhabitation": "Habitation"
+}
+{
+  "TreasuryCode": "Teacher Employee ID",
+  "TchSurName": "Last Name",
+  "TchFullName": "Teacher Name",
+  "FatherName": "Father's Name",
+  "Designation": "Designation",
+  "dob": "Date of Birth",
+  "dort": "Date of Retirement",
+  "gender": "Gender",
+  "teacher_type": "Teacher Type",
+  "bankacc_no": "Bank Account No",
+  "aadhar_no": "Aadhar Number",
+  "mobile_no": "Mobile Number",
+  "email": "Email",
+  "school_id": "School ID",
+  "udise": "UDISE",
+  "vmdistrict": "District",
+  "vmmandal": "Mandal",
+  "vmpanch": "Panchayat",
+  "vmhabitation": "Habitation"
+  /* Additional mappings omitted for brevity; you can edit this file in the editor UI */
+}

@@ -1,0 +1,18 @@
+Git is not available in the current environment (the 'git' command is not found).
+
+Please run the following commands locally (PowerShell) from the project root (C:\xampp\htdocs\deo-hanumakonda) to commit the changes:
+
+# Initialize repo if needed
+if (-not (Test-Path .git)) { git init }
+
+# Stage all changes
+git add -A
+
+# Commit with message
+git commit -m "Add teacher_view.php: CSV-driven sectioned particulars view; integrate db_connect; add README"
+
+# (Optional) Push to a remote repository
+# git remote add origin <your-remote-url>
+# git push -u origin main
+
+If you want, run these commands and paste the output here; I can help with the next steps (creating a branch, pushing, or preparing a patch file).

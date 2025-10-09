@@ -1,0 +1,10 @@
+<?php
+// Copy this file to includes/db_connect.php and fill in your DB credentials.
+$host = '127.0.0.1';
+$user = 'root';
+$pass = '';
+$db = 'your_database_name';
+
+$conn = new mysqli($host, $user, $pass, $db);
+if ($conn->connect_error) die('DB connect error: ' . $conn->connect_error);
+?>
