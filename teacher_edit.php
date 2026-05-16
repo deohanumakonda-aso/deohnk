@@ -1,9 +1,65 @@
 <?php
-// Suppress PHP error/warning display in HTTP output on all environments.
-// Errors are still logged server-side. This is critical to prevent PHP warnings
-// from corrupting JSON AJAX responses (e.g. "Server Error (HTML response)").
+// ============================================================
+// AJAX SAFETY LAYER — Must be FIRST, before any output
+// Ensures AJAX requests ALWAYS receive JSON, even on fatal errors
+// ============================================================
 @ini_set('display_errors', '0');
+@ini_set('log_errors', '1');
 @error_reporting(E_ALL & ~E_NOTICE & ~E_WARNING & ~E_DEPRECATED);
+
+// Detect AJAX as early as possible (before any output)
+$__IS_AJAX = (
+    (isset($_POST['ajax']) && $_POST['ajax'] === '1') ||
+    (isset($_GET['ajax'])  && $_GET['ajax']  === '1')
+);
+
+if ($__IS_AJAX) {
+    // Start output buffering immediately so any accidental HTML is caught
+    ob_start();
+
+    // Register a shutdown function: if we exit without sending JSON,
+    // capture whatever was buffered (HTML error page, fatal error, etc.)
+    // and replace it with a JSON error response.
+    register_shutdown_function(function () {
+        // Check for a fatal error
+        $err = error_get_last();
+        $isFatal = $err && in_array($err['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR]);
+
+        // Get whatever was buffered so far
+        $buffered = '';
+        while (ob_get_level() > 0) {
+            $buffered .= ob_get_clean();
+        }
+
+        // If the buffered output is already valid JSON, let it through
+        if ($buffered !== '') {
+            $decoded = json_decode($buffered, true);
+            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                // It's valid JSON — send it as-is
+                header('Content-Type: application/json; charset=utf-8');
+                echo $buffered;
+                return;
+            }
+        }
+
+        // Output was HTML or empty — only act if headers not yet sent
+        if (!headers_sent()) {
+            header('Content-Type: application/json; charset=utf-8');
+            $errMsg = 'Server error';
+            if ($isFatal) {
+                $errMsg = 'PHP Fatal Error: ' . ($err['message'] ?? 'Unknown') . ' in ' . basename($err['file'] ?? '') . ':' . ($err['line'] ?? '');
+            } elseif ($buffered !== '') {
+                // Strip HTML tags to get a cleaner error message
+                $stripped = trim(strip_tags($buffered));
+                $stripped = preg_replace('/\s+/', ' ', $stripped);
+                if (strlen($stripped) > 300) $stripped = substr($stripped, 0, 300) . '...';
+                $errMsg = $stripped ?: 'Server returned unexpected output';
+            }
+            echo json_encode(['success' => false, 'message' => $errMsg, 'debug_html' => substr($buffered, 0, 500)]);
+        }
+    });
+}
+
 // Ensure a session is started only when none is active to avoid "session_start(): Ignoring session_start()" notices
 if (function_exists('session_status')) {
     if (session_status() !== PHP_SESSION_ACTIVE) {
@@ -189,20 +245,11 @@ if (!function_exists('compressUploadedImageFile')) {
     }
 }
 
-// Detect AJAX requests early and start output buffering so we can return clean JSON
-$is_ajax_request = (isset($_REQUEST['ajax']) && (string) $_REQUEST['ajax'] === '1');
-if ($is_ajax_request) {
-    // Start buffering to capture any inadvertent HTML/whitespace output
-    @ob_start();
-    // Early trigger log so we can confirm AJAX requests reach this script
+// Note: AJAX output buffering started at top of file in AJAX SAFETY LAYER.
+// Log the AJAX trigger for debugging purposes.
+if ($__IS_AJAX) {
     $triggerPath = __DIR__ . '/debug_ajax_trigger.txt';
-    $snap = [];
-    $snap['time'] = date('c');
-    $snap['remote_addr'] = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
-    $snap['method'] = $_SERVER['REQUEST_METHOD'] ?? 'unknown';
-    $snap['get'] = $_GET;
-    $snap['post'] = $_POST;
-    $snap['cookie'] = $_COOKIE;
+    $snap = ['time' => date('c'), 'remote_addr' => $_SERVER['REMOTE_ADDR'] ?? 'unknown', 'method' => $_SERVER['REQUEST_METHOD'] ?? 'unknown', 'post_keys' => array_keys($_POST), 'cookie_keys' => array_keys($_COOKIE)];
     @file_put_contents($triggerPath, json_encode($snap) . "\n", FILE_APPEND | LOCK_EX);
 }
 
@@ -1344,7 +1391,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['save_all']) || isset
                                             $updates[] = '`PhcUpload` = ?';
                                             $params[] = $destName;
                                             $types .= 's';
-                                            @file_put_contents(__DIR__ . '/edits.log', $auditLine, FILE_APPEND | LOCK_EX);
+                                            $uactorPhc = (isset($_SESSION['admin_loggedin']) && $_SESSION['admin_loggedin']) ? 'admin' : 'user';
+                                            $auditLinePhc = date('c') . "\t" . $uactorPhc . "\t" . $treasury . "\tUPLOAD\tPhcUpload\t" . $destName . "\n";
+                                            @file_put_contents(__DIR__ . '/edits.log', $auditLinePhc, FILE_APPEND | LOCK_EX);
                                         }
                                     }
                                 }
@@ -1446,28 +1495,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['save_all']) || isset
                     $types .= 's';
                     $params[] = $treasury;
 
-                    // Debug logging - write which fields are being updated
                     if ($stmt = $conn->prepare($sql)) {
-                        // bind params by reference
-                        $bindArgs = [];
-                        $bindArgs[] = $types;
-                        foreach ($params as $k => $v)
-                            $bindArgs[] = &$params[$k];
-                        call_user_func_array([$stmt, 'bind_param'], $bindArgs);
+                        // PHP 8.1+ compatible bind_param using spread operator
+                        // The old call_user_func_array + references pattern causes a TypeError in PHP 8.1+
+                        $stmt->bind_param($types, ...$params);
                         if ($stmt->execute()) {
                             $msg = 'Saved successfully. Updated ' . count($updates) . ' fields.';
                         } else {
                             $msg = 'Save failed: ' . $stmt->error;
                         }
                         $stmt->close();
-                        // audit log: record who saved, treasury, and changed columns
-                        $changed = implode(', ', array_map(function ($u) {
-                            return trim($u);
-                        }, $updates));
+                        // audit log
+                        $changed = implode(', ', array_map('trim', $updates));
                         $auditLine = date('c') . "\t" . (isset($_SESSION['admin_loggedin']) && $_SESSION['admin_loggedin'] ? 'admin' : 'user') . "\t" . $treasury . "\t" . $changed . "\n";
                         @file_put_contents(__DIR__ . '/edits.log', $auditLine, FILE_APPEND | LOCK_EX);
                     } else {
-                        $msg = 'Server error preparing update.';
+                        $msg = 'Server error preparing update: ' . $conn->error;
                     }
                 } else {
                     $msg = 'No editable fields submitted.';
