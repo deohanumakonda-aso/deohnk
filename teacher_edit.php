@@ -1025,6 +1025,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['save_all']) || isset
 
                 // remove TreasuryCode from update list
                 $allowed = array_filter(array_unique($allowed));
+
+                // --- Safety: filter out columns that don't exist in the DB table ---
+                // This prevents 'Unknown column' fatal errors when web server DB schema
+                // is behind the local schema (missing newly added columns).
+                try {
+                    $existingCols = [];
+                    $colRes = $conn->query('SHOW COLUMNS FROM teacherdata');
+                    if ($colRes) {
+                        while ($colRow = $colRes->fetch_assoc()) {
+                            $existingCols[] = strtolower($colRow['Field']);
+                        }
+                        $colRes->free();
+                    }
+                    if (!empty($existingCols)) {
+                        $allowed = array_filter($allowed, function($col) use ($existingCols) {
+                            return in_array(strtolower($col), $existingCols, true);
+                        });
+                    }
+                } catch (Exception $e) {
+                    // If SHOW COLUMNS fails, proceed with all columns (will catch SQL error later)
+                    error_log('SHOW COLUMNS failed: ' . $e->getMessage());
+                }
                 $updates = [];
                 $params = [];
                 $types = '';
@@ -1495,22 +1517,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['save_all']) || isset
                     $types .= 's';
                     $params[] = $treasury;
 
-                    if ($stmt = $conn->prepare($sql)) {
-                        // PHP 8.1+ compatible bind_param using spread operator
-                        // The old call_user_func_array + references pattern causes a TypeError in PHP 8.1+
-                        $stmt->bind_param($types, ...$params);
-                        if ($stmt->execute()) {
-                            $msg = 'Saved successfully. Updated ' . count($updates) . ' fields.';
+                    try {
+                        $stmt = $conn->prepare($sql);
+                        if ($stmt) {
+                            // PHP 8.1+ compatible bind_param using spread operator
+                            $stmt->bind_param($types, ...$params);
+                            if ($stmt->execute()) {
+                                $msg = 'Saved successfully. Updated ' . count($updates) . ' fields.';
+                            } else {
+                                $msg = 'Save failed: ' . $stmt->error;
+                            }
+                            $stmt->close();
+                            // audit log
+                            $changed = implode(', ', array_map('trim', $updates));
+                            $auditLine = date('c') . "\t" . (isset($_SESSION['admin_loggedin']) && $_SESSION['admin_loggedin'] ? 'admin' : 'user') . "\t" . $treasury . "\t" . $changed . "\n";
+                            @file_put_contents(__DIR__ . '/edits.log', $auditLine, FILE_APPEND | LOCK_EX);
                         } else {
-                            $msg = 'Save failed: ' . $stmt->error;
+                            $msg = 'Server error preparing update: ' . $conn->error;
                         }
-                        $stmt->close();
-                        // audit log
-                        $changed = implode(', ', array_map('trim', $updates));
-                        $auditLine = date('c') . "\t" . (isset($_SESSION['admin_loggedin']) && $_SESSION['admin_loggedin'] ? 'admin' : 'user') . "\t" . $treasury . "\t" . $changed . "\n";
-                        @file_put_contents(__DIR__ . '/edits.log', $auditLine, FILE_APPEND | LOCK_EX);
-                    } else {
-                        $msg = 'Server error preparing update: ' . $conn->error;
+                    } catch (Exception $e) {
+                        $msg = 'Database error: ' . $e->getMessage();
+                        error_log('teacher_edit UPDATE error: ' . $e->getMessage() . ' SQL: ' . $sql);
                     }
                 } else {
                     $msg = 'No editable fields submitted.';
