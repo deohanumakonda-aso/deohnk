@@ -57,26 +57,37 @@ if ($stmt = $conn->prepare($sql)) {
     $stmt->close();
 }
 
-// ── Fetch attendance matrix ───────────────────────────────────────────
+// ── Fetch attendance matrix via JOIN (avoids large IN clause) ─────────
+// attendance_date is stored in the DB already as IST date (DATE column)
 $attendance = []; // [UPPER(adm_no)][date] => [sessions]
 if (!empty($students) && !empty($allDates)) {
-    $admNos       = array_map('strtoupper', array_column($students, 'AdmNo'));
-    $placeholders = implode(',', array_fill(0, count($admNos), '?'));
-    $atSql  = "SELECT UPPER(adm_no) AS adm_no, attendance_date, attendance_session
-               FROM ttc_attendance
-               WHERE UPPER(adm_no) IN ($placeholders)
-                 AND attendance_date BETWEEN ? AND ?
-               ORDER BY attendance_date, attendance_session";
-    $atTypes  = str_repeat('s', count($admNos)) . 'ss';
-    $atParams = array_merge($admNos, [$startDate->format('Y-m-d'), $reportEnd->format('Y-m-d')]);
+    // Build the base JOIN query — only 2 bound params (date range)
+    // Apply the same trade/name filters so we don't load unneeded rows
+    $atSql = "SELECT UPPER(ta.adm_no) AS adm_no, ta.attendance_date, ta.attendance_session
+              FROM ttc_attendance ta
+              INNER JOIN ttc_registrations tr
+                ON UPPER(ta.adm_no) = UPPER(tr.AdmNo)
+               AND tr.approval_status = 'Approved'
+              WHERE ta.attendance_date BETWEEN ? AND ?";
+    $atParams = [$startDate->format('Y-m-d'), $reportEnd->format('Y-m-d')];
+    $atTypes  = 'ss';
+    if ($filterTrade !== '') { $atSql .= " AND tr.TradeOpted = ?"; $atTypes .= 's'; $atParams[] = $filterTrade; }
+    if ($filterName  !== '') { $atSql .= " AND tr.CandidateName LIKE ?"; $atTypes .= 's'; $atParams[] = '%'.$filterName.'%'; }
+    $atSql .= " ORDER BY ta.attendance_date, ta.adm_no, ta.attendance_session";
+
     if ($atStmt = $conn->prepare($atSql)) {
         $atStmt->bind_param($atTypes, ...$atParams);
         $atStmt->execute();
         $atRes = $atStmt->get_result();
         while ($row = $atRes->fetch_assoc()) {
-            $attendance[$row['adm_no']][$row['attendance_date']][] = $row['attendance_session'];
+            $an = strtoupper($row['adm_no']);
+            $dt = $row['attendance_date'];
+            $attendance[$an][$dt][] = $row['attendance_session'];
         }
         $atStmt->close();
+    } else {
+        // Log prepare failure for debugging
+        error_log('ttc_attendance_register: prepare failed: ' . $conn->error);
     }
 }
 
@@ -94,14 +105,17 @@ foreach ($students as $s) {
 $maxAll      = $totalStudents * $totalSessions;
 $overallPct  = $maxAll > 0 ? round($totalPresent / $maxAll * 100, 1) : 0;
 
-// ── Helper: render session badges ─────────────────────────────────────
+// ── Helper: render P-marker cell ─────────────────────────────────────
+// Shows P / P2 / P3 badges. Tooltip lists the sessions attended.
 function sessionBadge(array $sessions): string {
     if (empty($sessions)) return '<span class="att-absent">—</span>';
     sort($sessions);
-    $map = ['10AM' => '🌅', '1PM' => '☀', '4PM' => '🌆'];
-    $icons = array_map(fn($s) => $map[$s] ?? '✓', $sessions);
-    $cls = 'att-count-' . count($sessions);
-    return '<span class="att-present ' . $cls . '">' . implode(' ', $icons) . '</span>';
+    $count = count($sessions);
+    $label = $count === 1 ? 'P' : 'P' . $count;
+    $sessionMap = ['10AM' => '10AM', '1PM' => '1PM', '4PM' => '4PM'];
+    $tip = implode(', ', array_map(fn($s) => $sessionMap[$s] ?? $s, $sessions));
+    $cls = 'att-count-' . $count;
+    return '<span class="att-present ' . $cls . '" title="Present: ' . htmlspecialchars($tip) . '">' . $label . '</span>';
 }
 
 // ── Page CSS (injected by header.php into <head>) ─────────────────────
@@ -222,12 +236,12 @@ $pageCss = '
 
     <!-- Legend -->
     <div class="legend">
-        <strong>Sessions:</strong>
-        <div class="legend-item"><span class="att-present att-count-1">🌅</span>&nbsp;10 AM</div>
-        <div class="legend-item"><span class="att-present att-count-1">☀</span>&nbsp;1 PM</div>
-        <div class="legend-item"><span class="att-present att-count-1">🌆</span>&nbsp;4 PM</div>
+        <strong>Attendance:</strong>
+        <div class="legend-item"><span class="att-present att-count-1">P</span>&nbsp;1 session present</div>
+        <div class="legend-item"><span class="att-present att-count-2">P2</span>&nbsp;2 sessions present</div>
+        <div class="legend-item"><span class="att-present att-count-3">P3</span>&nbsp;All 3 sessions present</div>
         <div class="legend-item"><span class="att-absent">—</span>&nbsp;Absent</div>
-        <div class="legend-item" style="margin-left:auto;color:#64748b;font-size:.73rem;">% = attended sessions ÷ (days × 3) × 100</div>
+        <div class="legend-item" style="margin-left:auto;color:#64748b;font-size:.73rem;">Hover cell to see session times &nbsp;|&nbsp; % = attended ÷ (days × 3) × 100</div>
     </div>
 
     <!-- Attendance table -->
