@@ -57,38 +57,85 @@ if ($stmt = $conn->prepare($sql)) {
     $stmt->close();
 }
 
-// ── Fetch attendance matrix (UTC→IST conversion) ──────────────────────
-// attendance_time is stored in UTC. IST = UTC + 5h30m = +330 minutes.
-// We derive the IST date using DATE_ADD so cross-midnight edges are correct.
-$attendance = []; // [UPPER(adm_no)][IST_date Y-m-d] => [sessions]
-if (!empty($students) && !empty($allDates)) {
+// ── Fetch attendance — simple direct query (no JOIN needed) ────────────
+// Strategy: fetch ALL rows in the date range from ttc_attendance,
+// then match against our already-fetched $students array in PHP.
+// This avoids complex JOIN failures and is easy to debug.
+//
+// IST date: attendance_time is UTC → add 330 min for IST.
+// Fallback: if attendance_time is NULL or zero, use attendance_date as-is.
+
+$attendance  = [];  // [UPPER(adm_no)][Y-m-d IST] => [sessions]
+$dbg = [            // diagnostic data shown to admin
+    'table_exists'   => false,
+    'total_rows'     => 0,
+    'range_rows'     => 0,
+    'matched_rows'   => 0,
+    'prepare_error'  => '',
+    'sample'         => [],
+];
+
+// Build a Set of approved adm_nos for fast PHP-side lookup
+$approvedSet = [];
+foreach ($students as $s) {
+    $approvedSet[strtoupper(trim($s['AdmNo']))] = true;
+}
+
+// Check table exists
+$tblCheck = $conn->query("SHOW TABLES LIKE 'ttc_attendance'");
+if ($tblCheck && $tblCheck->num_rows > 0) {
+    $dbg['table_exists'] = true;
+
+    // Count total rows in table
+    $cntRes = $conn->query("SELECT COUNT(*) AS c FROM ttc_attendance");
+    if ($cntRes) $dbg['total_rows'] = (int)$cntRes->fetch_assoc()['c'];
+
+    // Fetch rows in IST date range — use both attendance_date AND attendance_time fallback
     $istStart = $startDate->format('Y-m-d');
     $istEnd   = $reportEnd->format('Y-m-d');
 
     $atSql = "SELECT
-                UPPER(TRIM(ta.adm_no)) AS adm_no,
-                DATE(DATE_ADD(ta.attendance_time, INTERVAL 330 MINUTE)) AS ist_date,
-                ta.attendance_session
-              FROM ttc_attendance ta
-              INNER JOIN ttc_registrations tr
-                ON UPPER(TRIM(ta.adm_no)) = UPPER(TRIM(tr.AdmNo))
-               AND tr.approval_status = 'Approved'
-              WHERE DATE(DATE_ADD(ta.attendance_time, INTERVAL 330 MINUTE)) BETWEEN ? AND ?";
-    $atParams = [$istStart, $istEnd];
-    $atTypes  = 'ss';
-    if ($filterTrade !== '') { $atSql .= " AND tr.TradeOpted = ?";          $atTypes .= 's'; $atParams[] = $filterTrade; }
-    if ($filterName  !== '') { $atSql .= " AND tr.CandidateName LIKE ?";     $atTypes .= 's'; $atParams[] = '%'.$filterName.'%'; }
-    $atSql .= " ORDER BY ist_date, adm_no, ta.attendance_session";
+                UPPER(TRIM(adm_no)) AS adm_no,
+                attendance_date,
+                attendance_time,
+                attendance_session
+              FROM ttc_attendance
+              WHERE attendance_date BETWEEN ? AND ?
+                 OR (attendance_time IS NOT NULL AND
+                     DATE(DATE_ADD(attendance_time, INTERVAL 330 MINUTE)) BETWEEN ? AND ?)";
 
     if ($atStmt = $conn->prepare($atSql)) {
-        $atStmt->bind_param($atTypes, ...$atParams);
+        $atStmt->bind_param('ssss', $istStart, $istEnd, $istStart, $istEnd);
         $atStmt->execute();
         $atRes = $atStmt->get_result();
+        $dbg['range_rows'] = $atRes->num_rows;
+
         while ($row = $atRes->fetch_assoc()) {
-            $attendance[$row['adm_no']][$row['ist_date']][] = $row['attendance_session'];
+            $an = strtoupper(trim($row['adm_no']));
+
+            // Determine the correct IST date:
+            // Prefer attendance_time (UTC→IST conversion); fall back to attendance_date
+            if (!empty($row['attendance_time']) && $row['attendance_time'] !== '0000-00-00 00:00:00') {
+                $utcTs  = strtotime($row['attendance_time']);
+                $istDt  = date('Y-m-d', $utcTs + 19800); // 19800 = 5.5 * 3600
+            } else {
+                $istDt = $row['attendance_date'];
+            }
+
+            // Keep a sample for debug
+            if (count($dbg['sample']) < 5) {
+                $dbg['sample'][] = "$an | att_date={$row['attendance_date']} | att_time={$row['attendance_time']} | ist=$istDt | session={$row['attendance_session']}";
+            }
+
+            // Only include if this student is in our approved list
+            if (isset($approvedSet[$an])) {
+                $attendance[$an][$istDt][] = $row['attendance_session'];
+                $dbg['matched_rows']++;
+            }
         }
         $atStmt->close();
     } else {
+        $dbg['prepare_error'] = $conn->error;
         error_log('ttc_attendance_register prepare failed: ' . $conn->error);
     }
 }
@@ -233,6 +280,31 @@ $pageCss = '
             Showing <strong><?= $totalStudents ?></strong> student(s) × <strong><?= $totalDays ?></strong> training day(s)
         </span>
     </div>
+
+    <!-- ── Admin debug panel ── -->
+    <?php if (in_array($userRole, ['ADMIN', 'DEO'])): ?>
+    <details style="background:#1e293b;color:#e2e8f0;border-radius:10px;padding:12px 16px;margin-bottom:14px;font-size:.78rem;font-family:monospace;">
+        <summary style="cursor:pointer;font-weight:700;color:#7dd3fc;">🔍 Attendance DB Diagnostics (Admin only — click to expand)</summary>
+        <div style="margin-top:10px;line-height:1.9;">
+            <div>Table exists: <b style="color:<?= $dbg['table_exists'] ? '#4ade80' : '#f87171' ?>"><?= $dbg['table_exists'] ? 'YES' : 'NO ❌' ?></b></div>
+            <div>Total rows in ttc_attendance: <b style="color:#fde68a"><?= $dbg['total_rows'] ?></b></div>
+            <div>Rows in date range (<?= $startDate->format('d M') ?> – <?= $reportEnd->format('d M Y') ?>): <b style="color:#fde68a"><?= $dbg['range_rows'] ?></b></div>
+            <div>Rows matched to approved students: <b style="color:<?= $dbg['matched_rows'] > 0 ? '#4ade80' : '#f87171' ?>"><?= $dbg['matched_rows'] ?></b></div>
+            <?php if ($dbg['prepare_error']): ?>
+            <div style="color:#f87171">⚠ Prepare error: <b><?= htmlspecialchars($dbg['prepare_error']) ?></b></div>
+            <?php endif; ?>
+            <?php if (!empty($dbg['sample'])): ?>
+            <div style="margin-top:6px;color:#94a3b8;">Sample rows (first 5):</div>
+            <?php foreach ($dbg['sample'] as $s): ?>
+            <div style="padding-left:12px;color:#a5f3fc;"><?= htmlspecialchars($s) ?></div>
+            <?php endforeach; ?>
+            <?php else: ?>
+            <div style="color:#f87171;">No rows returned from query — attendance table may be empty or dates don't match.</div>
+            <?php endif; ?>
+            <div style="margin-top:8px;color:#64748b;">Approved student count: <?= count($approvedSet) ?> | Date range: <?= $istStart ?? '?' ?> to <?= $istEnd ?? '?' ?></div>
+        </div>
+    </details>
+    <?php endif; ?>
 
     <!-- Legend -->
     <div class="legend">
