@@ -126,7 +126,8 @@ if ($tblCheck && $tblCheck->num_rows > 0) {
             }
 
             // Only include if this student is in our approved list
-            if (isset($approvedSet[$an])) {
+            // IGNORE 1PM session — only 10AM and 4PM count (2 sessions/day)
+            if (isset($approvedSet[$an]) && $row['attendance_session'] !== '1PM') {
                 $attendance[$an][$istDt][] = $row['attendance_session'];
                 $dbg['matched_rows']++;
             }
@@ -141,7 +142,7 @@ if ($tblCheck && $tblCheck->num_rows > 0) {
 // ── Summary stats ─────────────────────────────────────────────────────
 $totalStudents = count($students);
 $totalDays     = count($allDates);
-$totalSessions = $totalDays * 3;
+$totalSessions = $totalDays * 2;  // 2 sessions/day: 10AM + 4PM (1PM excluded)
 $totalPresent  = 0;
 foreach ($students as $s) {
     $an = strtoupper($s['AdmNo']);
@@ -153,13 +154,13 @@ $maxAll      = $totalStudents * $totalSessions;
 $overallPct  = $maxAll > 0 ? round($totalPresent / $maxAll * 100, 1) : 0;
 
 // ── Helper: render session-count cell ────────────────────────────────
-// Shows 1 / 2 / 3 (number of sessions attended). Tooltip = session names.
+// Shows 1 / 2 (sessions attended). Max 2 per day (10AM + 4PM only).
 function sessionBadge(array $sessions): string {
     if (empty($sessions)) return '<span class="att-absent">—</span>';
     sort($sessions);
     $count = count($sessions);
-    $tip   = implode(', ', $sessions);   // e.g. "10AM, 4PM"
-    $cls   = 'att-count-' . $count;
+    $tip   = implode(', ', $sessions);
+    $cls   = 'att-count-' . min($count, 2);   // max class is 2
     return '<span class="att-present ' . $cls . '" title="Sessions: ' . htmlspecialchars($tip) . '">' . $count . '</span>';
 }
 
@@ -307,12 +308,11 @@ $pageCss = '
 
     <!-- Legend -->
     <div class="legend">
-        <strong>Sessions attended:</strong>
-        <div class="legend-item"><span class="att-present att-count-1">1</span>&nbsp;1 session</div>
-        <div class="legend-item"><span class="att-present att-count-2">2</span>&nbsp;2 sessions</div>
-        <div class="legend-item"><span class="att-present att-count-3">3</span>&nbsp;All 3 sessions</div>
+        <strong>Sessions attended (10AM &amp; 4PM only):</strong>
+        <div class="legend-item"><span class="att-present att-count-1">1</span>&nbsp;1 session (10AM or 4PM)</div>
+        <div class="legend-item"><span class="att-present att-count-2">2</span>&nbsp;Both sessions</div>
         <div class="legend-item"><span class="att-absent">—</span>&nbsp;Absent / no record</div>
-        <div class="legend-item" style="margin-left:auto;color:#64748b;font-size:.73rem;">Dates in IST (UTC+5:30) &nbsp;|&nbsp; Hover cell for session names &nbsp;|&nbsp; % = sessions ÷ (days×3) ×100</div>
+        <div class="legend-item" style="margin-left:auto;color:#64748b;font-size:.73rem;">1PM ignored &nbsp;|&nbsp; Dates in IST (UTC+5:30) &nbsp;|&nbsp; % = sessions ÷ (days×2) ×100</div>
     </div>
 
     <!-- Attendance table -->
@@ -389,7 +389,7 @@ $pageCss = '
                 $studentTotal += count($sessions);
                 $cellSessions[$dt] = $sessions;
             }
-            $pct = $totalDays > 0 ? round($studentTotal / ($totalDays * 3) * 100, 1) : 0;
+            $pct = $totalDays > 0 ? round($studentTotal / ($totalDays * 2) * 100, 1) : 0;
             $pctClass = $pct >= 75 ? 'pct-high' : ($pct >= 50 ? 'pct-med' : 'pct-low');
         ?>
         <tr>
