@@ -19,13 +19,11 @@ $endDate   = new DateTime('2026-06-12');
 $today     = new DateTime();
 $reportEnd = ($today < $endDate) ? clone $today : clone $endDate;
 
-// Build array of all training dates (skip Sundays)
+// Build array of ALL dates (no days excluded — including Sundays)
 $allDates = [];
 $d = clone $startDate;
 while ($d <= $reportEnd) {
-    if ($d->format('N') != 7) { // 7 = Sunday
-        $allDates[] = $d->format('Y-m-d');
-    }
+    $allDates[] = $d->format('Y-m-d');
     $d->modify('+1 day');
 }
 
@@ -206,6 +204,7 @@ $pageCss = '
 .month-row th{background:#0f5691;font-size:.7rem;padding:5px 4px;letter-spacing:.04em;text-transform:uppercase;}
 .day-row th{background:#1e4976;font-size:.67rem;padding:4px 3px;color:#bfdbfe;}
 .day-row th.sat{color:#fcd34d;}
+.day-row th.sun{color:#fca5a5;}
 .att-table tbody tr:hover{background:#eff6ff;}
 .att-table tbody tr:nth-child(even){background:#f8fafc;}
 .att-table tbody tr:nth-child(even):hover{background:#eff6ff;}
@@ -246,7 +245,7 @@ $pageCss = '
         <p>Day-wise student attendance &nbsp;|&nbsp; 01 May 2026 – 12 June 2026</p>
         <div class="hero-meta">
             <div class="hero-stat"><strong><?= $totalStudents ?></strong><span>Students</span></div>
-            <div class="hero-stat"><strong><?= $totalDays ?></strong><span>Training Days</span></div>
+            <div class="hero-stat"><strong><?= $totalDays ?></strong><span>Total Days</span></div>
             <div class="hero-stat"><strong><?= $totalSessions ?></strong><span>Max Sessions/Student</span></div>
             <div class="hero-stat"><strong><?= $totalPresent ?></strong><span>Sessions Attended</span></div>
             <div class="hero-stat"><strong><?= $overallPct ?>%</strong><span>Overall Attendance</span></div>
@@ -363,11 +362,14 @@ $pageCss = '
                 <th class="col-name" style="min-width:155px;">Student Name</th>
                 <th style="min-width:75px;">Trade</th>
                 <?php foreach ($allDates as $dt):
-                    $isSat = (date('N', strtotime($dt)) == 6);
+                    $dow    = date('N', strtotime($dt)); // 6=Sat, 7=Sun
+                    $isSat  = ($dow == 6);
+                    $isSun  = ($dow == 7);
                     $dayNum = date('d', strtotime($dt));
-                    $dayAbbr = date('D', strtotime($dt));
+                    $dayAbbr= date('D', strtotime($dt));
+                    $thCls  = $isSat ? 'sat' : ($isSun ? 'sun' : '');
                 ?>
-                <th class="<?= $isSat ? 'sat' : '' ?> col-dt" data-date="<?= $dt ?>"
+                <th class="<?= $thCls ?> col-dt" data-date="<?= $dt ?>"
                     style="min-width:42px;" title="<?= date('d M Y (D)', strtotime($dt)) ?>">
                     <?= $dayNum ?><br><span style="font-size:.58rem;opacity:.7;"><?= $dayAbbr ?></span>
                 </th>
